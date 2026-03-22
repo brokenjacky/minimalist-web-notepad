@@ -8,6 +8,11 @@
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
+<div class="toolbar">
+    <button id="uploadBtn" title="上传图片">🖼 插入图片</button>
+    <input type="file" id="fileInput" accept="image/*" style="display:none">
+    <span id="uploadStatus"></span>
+</div>
 <div class="container">
     <textarea id="content">{{ .Content }}</textarea>
 </div>

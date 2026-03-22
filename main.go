@@ -2,12 +2,15 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,8 +20,9 @@ import (
 )
 
 const (
-	port     = 9099
-	savePath = "_tmp"
+	port       = 9099
+	savePath   = "_tmp"
+	uploadPath = "_tmp/uploads"
 )
 
 //go:embed static/*
@@ -145,6 +149,73 @@ func index(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func upload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		http.Error(w, "file too large", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "invalid file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	contentType := header.Header.Get("Content-Type")
+	allowedTypes := map[string]bool{
+		"image/jpeg": true,
+		"image/png":  true,
+		"image/gif":  true,
+		"image/webp": true,
+	}
+	if !allowedTypes[contentType] {
+		http.Error(w, "only image files are allowed", http.StatusBadRequest)
+		return
+	}
+
+	exts, _ := mime.ExtensionsByType(contentType)
+	ext := ".png"
+	if len(exts) > 0 {
+		ext = exts[0]
+		if contentType == "image/jpeg" {
+			ext = ".jpg"
+		}
+	}
+
+	if err := os.MkdirAll(uploadPath, 0755); err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+
+	filename := randStr() + ext
+	dst := filepath.Join(uploadPath, filename)
+
+	out, err := os.Create(dst)
+	if err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	defer out.Close()
+
+	if _, err = io.Copy(out, file); err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]string{
+		"url": "/uploads/" + filename,
+	}); err != nil {
+		log.Printf("write upload response error: %s\n", err)
+	}
+}
+
 func jump(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/"+randStr(), http.StatusFound)
 }
@@ -161,10 +232,14 @@ func randStr() string {
 }
 
 func main() {
+	_ = os.MkdirAll(uploadPath, 0755)
+
 	web, _ := fs.Sub(static, "static")
 	f := http.FileServer(http.FS(web))
 
 	http.Handle("/static/", http.StripPrefix("/static/", f))
+	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(uploadPath))))
+	http.HandleFunc("/upload", upload)
 	http.HandleFunc("/", index)
 
 	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
